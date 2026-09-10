@@ -1,0 +1,67 @@
+name: checkdb
+
+# Vivado-free regression gate: runs prjxray's own utils/checkdb.py against
+# every device this database declares (one representative part per device,
+# see .github/scripts/list_checkdb_targets.py), checking that every tile's
+# segbits fit within its declared frame/bit range with no overlap, and that
+# every part actually resolves to a fabric with real, parseable tilegrid/
+# segbits data.
+#
+# This does NOT replace hardware validation against real Vivado golden
+# references (see openXC7/nextpnr-xilinx#177 / #189 for that campaign) -- it
+# catches a different, narrower class of bug: a device pointed at the wrong
+# fabric, a part.yaml/devices.yaml inconsistency, or a malformed segbits/mask
+# file, all of which are checkable from the committed data alone. This is
+# exactly the class of bug prjxray-db#15's own description hit before it was
+# fixed (a KeyError on a device carrying a tile type its assigned fabric
+# doesn't have, an assertion on a block type missing a frame address).
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  checkdb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out prjxray-db
+        uses: actions/checkout@v4
+        with:
+          path: db
+
+      - name: Check out prjxray (tool repo, for utils/checkdb.py)
+        uses: actions/checkout@v4
+        with:
+          repository: openXC7/prjxray
+          path: tool
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install checkdb's Python dependencies
+        run: pip install pyyaml simplejson intervaltree ordered-set parse textx
+
+      - name: List checkdb targets (one representative part per device)
+        id: targets
+        run: |
+          python3 db/.github/scripts/list_checkdb_targets.py db \
+            | tee /tmp/checkdb_targets.txt
+
+      - name: Run checkdb.py against every device
+        env:
+          PYTHONPATH: ${{ github.workspace }}/tool:${{ github.workspace }}/tool/third_party/fasm
+        run: |
+          set -e
+          fail=0
+          while read -r family db_root part; do
+            echo "::group::checkdb -- $family / $part"
+            if ! python3 tool/utils/checkdb.py --db-root "db/$db_root" --part "$part"; then
+              echo "FAILED: $family / $part"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done < /tmp/checkdb_targets.txt
+          exit $fail
